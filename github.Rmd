@@ -1,0 +1,640 @@
+---
+title: "final"
+author: "Marcel, Owen"
+date: "7/27/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Introduction
+
+This markdown contains all analyses done for the manuscript "Contrasting resistance and resilience of the coupled oxic and anoxic components
+of an experimental microbial community". The first part deals with the oxygen data, the second part deals with the microbial 16S rRNA amplicons (PacBio full length sequencing)
+
+Short summary of the project:
+
+-8 micro-ecosystems, incubated at 24 °C for 8 days under light:dark cycles of 16:8h
+-afterwards, 4 micro-ecosystems (stressor treatment) were incubated in darkness for 7 days
+-afterwards, the stressor-treated columns were incubated again as the controls 
+-Oxygen was measured at the top and bottom of the liquid part continuously every 5 min
+-samples were taken at day 8 (prior-stressor treatment), day 15 ( stressor-treatment), day 19 (short time recovery) and day 35 (long term recovery) at the height of the top and bottom oxygen sensor, respectively, for 16S rRNA full length amplicon sequencing
+
+Aim of the study: Analysis of resistance and resilience of the oxygen concentration and the oxic/anoxic microbial community
+
+# Preparation
+
+```{r}
+library(boot)
+library(tidyverse)
+library(lubridate)
+library(googlesheets)
+library(here)
+library(readxl)
+library(writexl)
+library(ggplot2)
+library(dplyr)
+library(ggfortify)
+library(ggpubr)
+library(aod)
+library(skimr)
+library(scales)
+library(patchwork)
+library(broom)
+library(aod)
+library(Rcpp)
+library(microbiome)
+library(vegan)
+library(plyr)
+library(DESeq2)
+library(apeglm)
+library(patchwork)
+```
+
+
+# Oxygen 
+## data handling
+
+```{r}
+oxygen_data <- read_excel("oxygen_data")
+
+```
+
+### Fix the date and times
+
+```{r}
+oxygen_data <- oxygen_data %>%
+  mutate(Date_time = mdy_hms(paste0(Date, Time))) %>%
+  select(-Date, -Time)
+```
+
+
+### Calculate hourly average
+
+```{r}
+hourly_value <- oxygen_data %>%
+  mutate(Date = date(Date_time),
+         Hour = hour(Date_time)) %>%
+  group_by(Sensor_Name, Date, Hour) %>%
+  dplyr::summarise(mean_Value = mean(Value)) %>%
+  mutate(Date_time = ymd_h(paste0(Date, Hour)))
+
+hourly_value <- hourly_value %>% mutate(Day = as.numeric(Date - ymd("2020-12-02")))
+```
+
+### Calculate the DAILY mean, minimum, and maximum of the *hourly* means
+```{r}
+daily_values <- hourly_value %>%
+  ungroup() %>%
+  group_by(Date, Sensor_Name) %>%
+  dplyr::summarise(mean_O2 = mean(mean_Value),
+            min_O2 = min(mean_Value),
+            max_O2 = max(mean_Value),
+            amplitude_O2 = max_O2 - min_O2) %>%
+  mutate(Date_time_midpoint = ymd_hms(paste0(Date, "12:00:00"))) %>%
+  pivot_longer(names_to = "Variable", values_to = "Oxygen", cols = 3:6)
+```
+
+### put in missing values for the days where there is no data
+```{r}
+
+missing_data <- crossing(Sensor_Name = unique(daily_values$Sensor_Name),
+                         Variable = unique(daily_values$Variable),
+                         Date = dmy(paste(c(24:27), "12-2020")),
+                         Date_time_midpoint = ymd_hms(paste0(Date, " 12:00:00")))%>%
+  mutate(Oxygen = NA)
+
+daily_values <- rbind(daily_values, missing_data) %>%
+  mutate(Sensor_Name=tolower(Sensor_Name)) %>%
+  separate(Sensor_Name, into= c("Treatment", "Sensorposition","Column"), 
+           remove=FALSE)
+
+daily_values <- daily_values %>% mutate(Day = as.numeric(Date - ymd("2020-12-02")),
+                                Variable2 = factor(Variable, levels = c("mean_O2", "max_O2", "min_O2", "amplitude_O2")))
+
+
+```
+
+## plot the data
+
+## hourly values 
+```{r}
+plot_oxygen_a  <- hourly_value %>%
+  mutate(Day2 = Day*24 + Hour) %>%
+  ggplot(aes(x = Day2, y = mean_Value, col = Sensor_Name)) +
+  geom_line()  +
+  geom_rect(xmin = 195, xmax = 360,ymin = 0, ymax = 100, col = "lightblue", fill= "lightblue") +
+  geom_line()  +
+  geom_rect(xmin = 510, xmax = 640,ymin = 0, ymax = 100, col = "white", fill= "white") +
+  scale_color_manual(values =c("Control_top_1" = "black", "Control_top_2" = "black", "Control_top_3" = "black", "Control_top_4" = "black","Disturbance_top_1" ="red","Disturbance_top_2" ="red","Disturbance_top_3" ="red","Disturbance_top_4" ="red","Control_bottom_1" = "grey", "Control_bottom_2" = "grey", "Control_bottom_3" = "grey", "Control_bottom_4" = "grey","Disturbance_bottom_1" ="grey","disturbance_bottom_2" ="grey","disturbance_bottom_3" ="grey","Disturbance_bottom_4" ="grey")) +
+    theme_bw() + theme(panel.grid = element_blank()) + scale_x_continuous(breaks = seq(0, 817, by=48), labels=seq(0,35, by=2))+
+  theme(legend.position = "none") +
+  ylab("Hourly mean oxygen value [%]") +
+  xlab("Day") +
+  geom_point(data=data.frame(Day2=c(190, 360, 456, 840), mean_Value=rep(-1, 4)), colour="black", size=3, shape=4)
+
+
+plot(plot_oxygen_a)
+
+```
+
+## just top sensor with all 4 variables and daily mean
+```{r}
+
+plot_oxygen_b<- daily_values %>%
+  filter(Sensor_Name %in% c("control_top_1","control_top_2","control_top_3","control_top_4","disturbance_top_1","disturbance_top_2","disturbance_top_3","disturbance_top_4")) %>%
+  ggplot(aes(x = Day, y = Oxygen, col = Sensor_Name)) +
+  geom_rect(xmin = 8, xmax = 15,
+          ymin = -Inf, ymax = 100, col = "lightblue", fill="lightblue", alpha=.1) +
+  geom_line()  +
+  facet_wrap( ~ Variable2, ncol = 4) +
+  scale_color_manual(values =c("control_top_1" = "black", "control_top_2" = "black", "control_top_3" = "black", "control_top_4" = "black","disturbance_top_1" ="red","disturbance_top_2" ="red","disturbance_top_3" ="red","disturbance_top_4" ="red","control_bottom_1" = "black", "control_bottom_2" = "black", "control_bottom_3" = "black", "control_bottom_4" = "black","disturbance_bottom_1" ="red","disturbance_bottom_2" ="red","disturbance_bottom_3" ="red","disturbance_bottom_4" ="red")) +
+  theme_bw() + theme(panel.grid = element_blank())+
+  theme(legend.position = "none") +
+  geom_point(data=data.frame(Day=c(7.5, 15, 19, 35), Oxygen=rep(-7, 4)), shape=4 ,colour="black", size=2) +
+  ylab("Daily mean oxygen value [%]") +
+  xlab("Day")
+
+plot(plot_oxygen_b)
+```
+
+
+# Applying t-test for every day to get p.value for top sensors
+
+```{r}
+
+analysis <- daily_values %>%
+  filter(Sensor_Name != "control_top_1") %>%
+  na.omit() %>%
+  group_by(Date, Variable, Date_time_midpoint, Sensorposition) %>%
+  do(m1 = tidy(lm(Oxygen ~ Treatment, data=.), conf.int=T, conf.level = 0.95)) %>%
+  unnest() %>%
+  filter(term=="Treatmentdisturbance", Sensorposition == "top")
+
+analysis <- analysis %>% mutate(Day = as.numeric(Date - ymd("2020-12-02")),
+                                Variable2 = factor(Variable, levels = c("mean_O2", "max_O2", "min_O2", "amplitude_O2")))
+
+
+
+
+```
+
+## Plot the estimates
+#final
+```{r}
+plot_estimate_oxygen<- analysis %>%
+  ggplot(aes(x = Day, y = estimate)) +
+  geom_rect(xmin = 8, xmax = 15,
+          ymin = -Inf, ymax = 100, col = "lightblue", fill="lightblue", alpha=.1) +
+  geom_point()  +
+    geom_ribbon(aes(ymin=conf.low,ymax=conf.high, x=Day), alpha=.4)+
+    geom_rect(xmin = 22, xmax = 25,
+          ymin = -Inf, ymax = 100, col = "white", fill="white", alpha=1) +
+  facet_wrap( ~ Variable2, ncol = 4) +
+  scale_color_manual(values =c("control_top_1" = "black", "control_top_2" = "black", "control_top_3" = "black", "control_top_4" = "black","disturbance_top_1" ="red","disturbance_top_2" ="red","disturbance_top_3" ="red","disturbance_top_4" ="red","control_bottom_1" = "black", "control_bottom_2" = "black", "control_bottom_3" = "black", "control_bottom_4" = "black","disturbance_bottom_1" ="red","disturbance_bottom_2" ="red","disturbance_bottom_3" ="red","disturbance_bottom_4" ="red")) +
+  theme_bw() + theme(panel.grid = element_blank())+ 
+  geom_hline(yintercept=0, linetype="dashed") +
+  geom_point(data=data.frame(Day=c(7.5, 15, 19, 35), estimate=rep(-25, 4)), colour="black", size=2, shape=4) +
+  ylab("Estimate") +
+  xlab("Day")
+
+print(plot_estimate_oxygen)
+
+```
+
+# Microbial community
+
+## Load phyloseq data, remove chloroplast sequences, just include samples from Experiment part III
+
+```{r}
+ps <- readRDS("ps_oxic_anoxic.rds")
+ps_new <-  subset_taxa(ps, Order != "Chloroplast")
+taxa_names(ps_new) <- paste0("Seq", seq(ntaxa(ps)))
+```
+
+## Calculation of alpha diversity index
+```{r}
+
+diversity_test<- estimate_richness(ps_new, split=TRUE, measures=NULL)
+diversity_test$ID <- rownames(diversity_test) 
+names <- read_excel("barcodes_FKIII.xlsx")
+names1 <- as.data.frame(names)
+names1$ID <- gsub("--", "..", names1$...1)
+diversity_analysis <- merge(diversity_test, names1, by=c("ID"))
+
+stderr <- function(x, na.rm=FALSE) {
+  if (na.rm) x <- na.omit(x)
+  sqrt(var(x)/length(x))
+}
+
+div_means <- diversity_analysis %>%
+  dplyr::filter(Position %in% c("bottom", "top")) %>%
+    dplyr::group_by(Position, Day, Treatment) %>%
+    dplyr::summarize(Shannon_mean = mean(Shannon),
+                     Shannon_SE = stderr(Shannon))
+
+div_raw <- diversity_analysis
+
+
+  
+plot_a_diversity_top <- ggplot() +
+  geom_rect(data=div_raw, aes(xmin = 8, xmax = 15,
+          ymin = -Inf, ymax = Inf), col = "lightblue", fill="lightblue", alpha=0.1) +
+  geom_point(data = subset(div_raw, Position == "top"), aes(x=Day, y=Shannon, col=Treatment,shape=Position), size=3, alpha=.7)+
+  scale_shape_manual(values=c(17,16))+
+  geom_point(data=subset(div_means, Position == "top"), aes(x=Day, y=Shannon_mean, col=Treatment), shape="+", size = 10, position = "dodge", width = 0.25) +
+  geom_line(data=subset(div_means, Position =="top"), aes(x=Day, y=Shannon_mean, col=Treatment), linetype="dashed") +
+    scale_colour_manual(values = c("Control" = "black", "Disturbance" = "red"))+
+  theme_bw() + theme(panel.grid = element_blank())+ 
+  theme(legend.position = "none")  +
+  scale_x_continuous(limits=c(0,36),breaks = c(0,8,15,19,35)) +
+  ggtitle("top layer community") +
+  theme(plot.title = element_text(size = 11))
+
+print(plot_a_diversity_top)
+
+plot_a_diversity_bottom <- ggplot() +
+  geom_rect(data=div_raw, aes(xmin = 8, xmax = 15,
+          ymin = -Inf, ymax = Inf), col = "lightblue", fill="lightblue", alpha=0.1) +
+  geom_point(data = subset(div_raw, Position == "bottom"), aes(x=Day, y=Shannon, col=Treatment,shape=Position), size=3, alpha=.7)+
+  scale_shape_manual(values=c(17,16))+
+  geom_point(data=subset(div_means, Position == "bottom"), aes(x=Day, y=Shannon_mean, col=Treatment), shape="+", size = 10, position = "dodge", width = 0.25) +
+  geom_line(data=subset(div_means, Position =="bottom"), aes(x=Day, y=Shannon_mean, col=Treatment), linetype="dashed") +
+    scale_colour_manual(values = c("Control" = "black", "Disturbance" = "red"))+
+  theme_bw() + theme(panel.grid = element_blank())+ 
+  theme(legend.position = "none")  +
+  scale_x_continuous(limits=c(0,36),breaks = c(0,8,15,19,35)) +
+  ggtitle("bottom layer community")+
+  theme(plot.title = element_text(size = 11))
+
+print(plot_a_diversity_bottom)
+```
+
+## estimates of the alpha diversity analysis
+```{r}
+
+ analysis_shannon <- div_raw %>%
+  group_by(Day, Position) %>%
+  do(m1 = tidy(lm(Shannon ~ Treatment, data=.), conf.int=T, conf.level = 0.95)) %>%
+  unnest(cols = c(m1)) %>%
+  filter(term=="TreatmentDisturbance")
+
+# plot the estimates
+plot_estimates_shannon_top <- analysis_shannon%>%
+  filter(Position=="top") %>%
+  ggplot(aes(x = Day, y = estimate)) +
+  geom_rect(xmin = 8, xmax = 15,
+          ymin = -Inf, ymax = 100, col = "lightblue", fill="lightblue", alpha=.1) +
+  geom_point()  +
+    geom_errorbar(aes(ymin=conf.low,ymax=conf.high, x=Day),width=0.5, size=0.5, color="black")+
+  theme_bw() + theme(panel.grid = element_blank())+ 
+  geom_hline(yintercept=0, linetype="dashed") +
+  ylab("Estimate") +
+  xlab("Day")  +
+  scale_x_continuous(limits=c(0,37),breaks = c(0, 8,15,19,35))
+ 
+
+print(plot_estimates_shannon_top)
+
+plot_estimates_shannon_bottom <- analysis_shannon%>%
+  filter(Position=="bottom") %>%
+  ggplot(aes(x = Day, y = estimate)) +
+  geom_rect(xmin = 8, xmax = 15,
+          ymin = -Inf, ymax = 100, col = "lightblue", fill="lightblue", alpha=.1) +
+  geom_point()  +
+    geom_errorbar(aes(ymin=conf.low,ymax=conf.high, x=Day),width=0.5, size=0.5, color="black")+
+  theme_bw() + theme(panel.grid = element_blank())+ 
+  geom_hline(yintercept=0, linetype="dashed") +
+  ylab("Estimate") +
+  xlab("Day")  +
+  scale_x_continuous(limits=c(0,37),breaks = c(0, 8,15,19,35)) 
+
+print(plot_estimates_shannon_bottom)
+
+
+
+#Anova 
+## top community
+diversity_analysis_top<- diversity_analysis %>%
+  filter(Position=="top")
+
+lm_treatment <- lm(Shannon ~ Treatment*Day, data = diversity_analysis_top)
+autoplot(lm_treatment)
+anova(lm_treatment)
+summary(lm_treatment)
+ 
+##top sensor shannon index is affected "postponed", and it does not show resilience
+ Anova_treatment <- lm(Shannon ~ Treatment*as.factor(Day), data = diversity_analysis_top)
+autoplot(Anova_treatment)
+anova(Anova_treatment)
+summary(Anova_treatment)
+
+AIC(lm_treatment, Anova_treatment)
+
+#bottom community
+diversity_analysis_bottom<- diversity_analysis %>%
+  filter(Position=="bottom")
+
+##bottom sensor shannon index is affected directly, and it does show resilience
+lm_treatment <- lm(Shannon ~ Treatment*Day, data = diversity_analysis_bottom)
+autoplot(lm_treatment)
+anova(lm_treatment)
+summary(lm_treatment)
+
+#bottom sensor shannon index is affected directly, and it does show resilience
+Anova_treatment <- lm(Shannon ~ Treatment*as.factor(Day), data = diversity_analysis_bottom)
+autoplot(Anova_treatment)
+anova(Anova_treatment)
+summary(Anova_treatment)
+
+AIC(lm_treatment, Anova_treatment)
+```
+
+# Calculation rel abundance, just sequences that appear > 0.1 %, making dataframes for each column position
+
+```{r}
+ps_rel <- transform_sample_counts(ps_new, function(x) x / sum(x) )
+
+relab_threshold <- 0.001
+
+ps_relab <- filter_taxa(ps_rel, function(x) !(sum(x < relab_threshold) == length(x)), TRUE)
+ntaxa(ps_new)
+ntaxa(ps_relab)
+
+ps_relative <- transform_sample_counts(ps_relab, function(x)  x / sum(x))
+df_rel <- psmelt(ps_relative)
+df_rel_top <- df_rel %>%
+  filter(Position == "top")
+df_rel_bottom <- df_rel %>%
+  filter(Position == "bottom")
+
+```
+
+
+# NMDS
+
+## NMDS Plot
+
+```{r}
+mds_whole <- ps_relative@otu_table %>%
+  as.data.frame() %>%
+  metaMDS(., 
+        distance = "bray",
+        k = 2, ## number of dimensions to reduce to
+        try = 200, ## number of random starts to try
+        autotransform = FALSE ## best not to use
+)
+## 0.16
+
+
+mds_whole_res <- ps_relative @sam_data %>%
+  as.tibble() %>%
+  select(Treatment, Column, Day, Position,Day_name) %>%
+  bind_cols(as.tibble(scores(mds_whole, display = "sites")))
+
+nmds_plot_supplements <- ggplot(mds_whole_res, aes(x = NMDS1, y = NMDS2)) +
+  geom_point(aes(shape = Position, color=Treatment),
+             size = 2) +
+  scale_shape_manual(values =c(17,16))+
+  facet_wrap("Day", ncol=2)+
+   theme_bw() + theme(panel.grid = element_blank())+ 
+  scale_colour_manual(values = c("Control" = "black", "Disturbance" = "red"))
+
+print(nmds_plot_supplements)
+```
+
+# NMDS separated for NMDS1 and NMDS2 axis
+
+```{r}
+NMDS_top <- mds_whole_res %>% 
+ filter(Position=="top") 
+
+NMDS_bottom <- mds_whole_res %>% 
+ filter(Position=="bottom") 
+
+
+# Dynamics
+plot_NMDS1_top <- NMDS_top %>%
+  ggplot(aes(x = Day, y = NMDS1, col = Treatment)) +
+  geom_rect(xmin = 8, xmax = 15,
+          ymin = -Inf, ymax = 100, col = "lightblue", fill="lightblue", alpha=.1) +
+  geom_point(shape=16, size = 2)+
+  geom_smooth() +
+  theme_bw() + theme(panel.grid = element_blank())+ 
+    scale_colour_manual(values = c("Control" = "black", "Disturbance" = "red"))+
+  ggtitle("top layer community") +
+  scale_x_continuous(limits=c(0,36),breaks = c(0, 8,15,19,35))+
+  theme(legend.position = "none")+
+  theme(plot.title = element_text(size = 11))
+
+print(plot_NMDS1_top)
+
+plot_NMDS2_top <- NMDS_top %>%
+  ggplot(aes(x = Day, y = NMDS2, col = Treatment)) +
+  geom_rect(xmin = 8, xmax = 15,
+          ymin = -Inf, ymax = 100, col = "lightblue", fill="lightblue", alpha=.1) +
+  geom_point(shape=16, size = 2) +
+  geom_smooth() +
+  theme_bw() + theme(panel.grid = element_blank())+ 
+  ggtitle("top layer community")+ 
+  scale_x_continuous(limits=c(0,36),breaks = c(0, 8,15,19,35))+
+    scale_colour_manual(values = c("Control" = "black", "Disturbance" = "red"))+
+  theme(legend.position = "none")+
+  theme(plot.title = element_text(size = 11))
+
+print(plot_NMDS2_top)
+
+plot_NMDS1_bottom <- NMDS_bottom %>%
+  ggplot(aes(x = Day, y = NMDS1, col = Treatment)) +
+  geom_rect(xmin = 8, xmax = 15,
+          ymin = -Inf, ymax = 100, col = "lightblue", fill="lightblue", alpha=.1) +
+  geom_point(shape=17, size = 2) +
+  geom_smooth() +
+  theme_bw() + theme(panel.grid = element_blank())+ 
+    scale_colour_manual(values = c("Control" = "black", "Disturbance" = "red"))+
+  ggtitle("bottom layer community")+ 
+  scale_x_continuous(limits=c(0,36),breaks = c(0, 8,15,19,35))+
+  theme(legend.position = "none")+
+  theme(plot.title = element_text(size = 11))
+
+print(plot_NMDS1_bottom)
+
+plot_NMDS2_bottom<- NMDS_bottom %>%
+  ggplot(aes(x = Day, y = NMDS2, col = Treatment)) +
+  geom_rect(xmin = 8, xmax = 15,
+          ymin = -Inf, ymax = 100, col = "lightblue", fill="lightblue", alpha=.1) +
+  geom_point(shape=17, size = 2) +
+  geom_smooth() +
+  theme_bw() + theme(panel.grid = element_blank())+ 
+  scale_x_continuous(limits=c(0,36),breaks = c(0, 8,15,19,35))+
+    scale_colour_manual(values = c("Control" = "black", "Disturbance" = "red"))+
+  ggtitle("bottom layer community")+ 
+  theme(legend.position = "none")+
+  theme(plot.title = element_text(size = 11))
+
+print(plot_NMDS2_bottom)
+
+```
+
+## estimate analysis for NMDS data
+```{r}
+
+analysis_NMDS1_top <- NMDS_top %>%
+  group_by(Day, Day_name) %>%
+  do(m1 = tidy(lm(NMDS1 ~ Treatment, data=.), conf.int=T, conf.level = 0.95)) %>%
+  unnest(cols = c(m1)) %>%
+  filter(term=="TreatmentDisturbance")
+
+plot_estimate_NMDS1_top <- analysis_NMDS1_top %>%
+  ggplot(aes(x = Day, y = estimate)) +
+  geom_rect(xmin = 8, xmax = 15,
+          ymin = -Inf, ymax = 100, col = "lightblue", fill="lightblue", alpha=.1) +
+  geom_point()  +
+  geom_errorbar(aes(x=Day, ymin=conf.low, ymax=conf.high), width=0.5, size=0.5, color="black")+ 
+  theme_bw() + theme(panel.grid = element_blank())+ 
+  geom_hline(yintercept=0, linetype="dashed") +
+  scale_x_continuous(limits=c(0,36),breaks = c(0, 8,15,19,35))+
+  ylab("Estimate") +
+  xlab("Day")
+
+print(plot_estimate_NMDS1_top)
+
+
+analysis_NMDS2_top <- NMDS_top %>%
+  group_by(Day, Day_name) %>%
+  do(m1 = tidy(lm(NMDS2 ~ Treatment, data=.), conf.int=T, conf.level = 0.95)) %>%
+  unnest(cols = c(m1)) %>%
+  filter(term=="TreatmentDisturbance")
+
+plot_estimate_NMDS2_top <- analysis_NMDS2_top %>%
+  ggplot(aes(x = Day, y = estimate)) +
+  geom_rect(xmin = 8, xmax = 15,
+          ymin = -Inf, ymax = 100, col = "lightblue", fill="lightblue", alpha=.1) +
+  geom_point()  +
+  geom_errorbar(aes(x=Day, ymin=conf.low, ymax=conf.high), width=0.5, size=0.5, color="black")+
+  theme_bw() + theme(panel.grid = element_blank())+ 
+  scale_x_continuous(limits=c(0,36),breaks = c(0, 8,15,19,35))+
+  geom_hline(yintercept=0, linetype="dashed") +
+  ylab("Estimate") +
+  xlab("Day")
+
+print(plot_estimate_NMDS2_top)
+
+analysis_NMDS1_bottom <- NMDS_bottom %>%
+  group_by(Day, Day_name) %>%
+  do(m1 = tidy(lm(NMDS1 ~ Treatment, data=.), conf.int=T, conf.level = 0.95)) %>%
+  unnest(cols = c(m1)) %>%
+  filter(term=="TreatmentDisturbance")
+
+plot_estimate_NMDS1_bottom <- analysis_NMDS1_bottom%>%
+  ggplot(aes(x = Day, y = estimate)) +
+  geom_rect(xmin = 8, xmax = 15,
+          ymin = -Inf, ymax = 100, col = "lightblue", fill="lightblue", alpha=.1) +
+  geom_point()  +
+  geom_errorbar(aes(x=Day, ymin=conf.low, ymax=conf.high), width=0.5, size=0.5, color="black")+
+  theme_bw() + theme(panel.grid = element_blank())+ 
+  geom_hline(yintercept=0, linetype="dashed")+
+  scale_x_continuous(limits=c(0,36),breaks = c(0, 8,15,19,35))+
+  ylab("Estimate") +
+  xlab("Day")
+
+print(plot_estimate_NMDS1_bottom)
+
+analysis_NMDS2_bottom <- NMDS_bottom %>%
+  group_by(Day, Day_name) %>%
+  do(m1 = tidy(lm(NMDS2 ~ Treatment, data=.), conf.int=T, conf.level = 0.95)) %>%
+  unnest(cols = c(m1)) %>%
+  filter(term=="TreatmentDisturbance")
+
+plot_estimate_NMDS2_bottom <- analysis_NMDS2_bottom%>%
+  ggplot(aes(x = Day, y = estimate)) +
+  geom_rect(xmin = 8, xmax = 15,
+          ymin = -Inf, ymax = 100, col = "lightblue", fill="lightblue", alpha=.1) +
+  geom_point()  +
+  geom_errorbar(aes(x=Day, ymin=conf.low, ymax=conf.high), width=0.5, size=0.5, color="black")+
+  theme_bw() + theme(panel.grid = element_blank())+ 
+  geom_hline(yintercept=0, linetype="dashed") +
+  scale_x_continuous(limits=c(0,36),breaks = c(0, 8,15,19,35))+
+  ylab("Estimate") +
+  xlab("Day")
+
+print(plot_estimate_NMDS2_bottom)
+```
+
+# final plot of figures combined
+
+```{r}
+p1 <- plot_oxygen_a
+p2 <- plot_oxygen_b
+p3 <- plot_a_diversity_top
+p4<-  plot_a_diversity_bottom
+p5 <- plot_estimates_shannon_top
+p6 <- plot_estimates_shannon_bottom
+p7 <- plot_NMDS1_bottom
+p8 <- plot_NMDS2_bottom
+p9 <- plot_NMDS1_top
+p10 <- plot_NMDS2_top
+
+p11 <- plot_estimate_oxygen
+p12<- plot_estimates_shannon_top
+p13<- plot_estimates_shannon_bottom
+p14 <- plot_estimate_NMDS1_bottom
+p15 <- plot_estimate_NMDS2_bottom
+p16 <- plot_estimate_NMDS1_top
+p17 <- plot_estimate_NMDS2_top
+
+
+#Figure 1
+plot_1 <- p1/
+  p2/
+  p11 
+
+plot_1 +
+  plot_layout(heights=c(2,1,1)) + plot_annotation(tag_levels = "a")
+
+
+#Figure 2
+plot <- (p4|p13)/
+  (p3|p12)/
+  (p7|p14)/
+  (p8|p15)/
+  (p9 |p16)/
+  (p10 |p17)
+  
+
+plot + plot_annotation(tag_levels = "a")
+```
+
+#Supplementary Information
+
+## Visualization of rel.abundance for supplementary information
+```{r}
+df_class<- df_rel %>%
+  group_by(Class, Treatment,Day, Column, Position) %>%
+  dplyr::summarize(Abundance=sum(Abundance))
+
+
+index <- which(df_class$Abundance>=0.05)
+class_to_keep <- unique(df_class[index,"Class"])
+class_to_keep <- unname(unlist(class_to_keep))
+
+ 
+
+df_class$Class_filter <- ifelse(df_class$Class %in% class_to_keep, df_class$Class,"Zother")
+
+   cols <-c("Actinobacteria"="bisque1", "Alphaproteobacteria" = "yellow", "Babeliae"="lightcyan1","Bacilli" = "green4",  "Bacteroidia" ="maroon1", "Campylobacteria" ="royalblue1","Zother"="black","Chlorobia" ="thistle1", "Clostridia"= "firebrick1", "Cyanobacteriia" = "magenta4", "Fimbriimonadia" = "grey","Gammaproteobacteria"="red", "Microgenomatia"="grey38","Oligoflexia"="snow1", "Phycisphaerae"="cornflowerblue", "Planctomycetes"="lightskyblue1","Spirochaetia"="lavender", "Vampirivibronia" = "lightsalmon", "Verrucomicrobiae" = "slateblue3")
+   
+  supplement_plot1 <-df_class%>%
+  ggplot(aes_string(x = "Column", y = "Abundance", fill="Class_filter" )) +
+     geom_bar(stat = "identity", position = "stack", col="black") +
+       facet_wrap(Position~Day, ncol = 4)  +
+       theme(axis.text.x = element_text(angle = -45, hjust = 0, vjust=0.5, size=9))+
+    ylab("Relative abundance") +
+  scale_fill_manual("legend", values = cols)
+  
+  print(supplement_plot1)
+```
+
