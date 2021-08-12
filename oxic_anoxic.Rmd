@@ -176,14 +176,10 @@ analysis <- daily_values %>%
 
 analysis <- analysis %>% mutate(Day = as.numeric(Date - ymd("2020-12-02")),
                                 Variable2 = factor(Variable, levels = c("mean_O2", "max_O2", "min_O2", "amplitude_O2")))
-
-
-
-
 ```
 
 ## Plot the estimates
-#final
+
 ```{r}
 plot_estimate_oxygen<- analysis %>%
   ggplot(aes(x = Day, y = estimate)) +
