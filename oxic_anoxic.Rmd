@@ -1,33 +1,13 @@
 ---
 title: "final"
-author: "Marcel, Owen"
+author: "Marcel Suleiman, Frank Pennekamp, Owen Petchey"
 date: "7/27/2021"
 output: html_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-```
 
-
-# Introduction
-
-This markdown contains all analyses done for the manuscript "Contrasting resistance and resilience of the coupled oxic and anoxic components
-of an experimental microbial community". The first part deals with the oxygen data, the second part deals with the microbial 16S rRNA amplicons (PacBio full length sequencing)
-
-Short summary of the project:
-
--8 micro-ecosystems, incubated at 24 °C for 8 days under light:dark cycles of 16:8h
--afterwards, 4 micro-ecosystems (stressor treatment) were incubated in darkness for 7 days
--afterwards, the stressor-treated columns were incubated again as the controls 
--Oxygen was measured at the top and bottom of the liquid part continuously every 5 min
--samples were taken at day 8 (prior-stressor treatment), day 15 ( stressor-treatment), day 19 (short time recovery) and day 35 (long term recovery) at the height of the top and bottom oxygen sensor, respectively, for 16S rRNA full length amplicon sequencing
-
-Aim of the study: Analysis of resistance and resilience of the oxygen concentration and the oxic/anoxic microbial community
-
-# Preparation
-
-```{r}
 library(boot)
 library(tidyverse)
 library(lubridate)
@@ -55,12 +35,26 @@ library(patchwork)
 ```
 
 
+# Introduction
+
+This code contains all analyses done for the manuscript "Contrasting resistance and resilience of the coupled oxic and anoxic components
+of an experimental microbial community". The first part deals with the oxygen data, the second part deals with the microbial 16S rRNA amplicons (PacBio full length sequencing)
+
+Short summary of the project:
+
+-8 micro-ecosystems, incubated at 24 °C for 8 days under light:dark cycles of 16:8h
+-afterwards, 4 micro-ecosystems (stressor treatment) were incubated in darkness for 7 days
+-afterwards, the stressor-treated columns were incubated again as the controls 
+-Oxygen was measured at the top and bottom of the liquid part continuously every 5 min
+-samples were taken at day 8 (prior-stressor treatment), day 15 ( stressor-treatment), day 19 (short time recovery) and day 35 (long term recovery) at the height of the top and bottom oxygen sensor, respectively, for 16S rRNA full length amplicon sequencing
+
+Aim of the study: Analysis of resistance and resilience of the oxygen concentration and the oxic/anoxic microbial community
+
 # Oxygen 
 ## data handling
 
 ```{r}
 oxygen_data <- read_excel("oxygen_data")
-
 ```
 
 ### Fix the date and times
@@ -114,8 +108,6 @@ daily_values <- rbind(daily_values, missing_data) %>%
 
 daily_values <- daily_values %>% mutate(Day = as.numeric(Date - ymd("2020-12-02")),
                                 Variable2 = factor(Variable, levels = c("mean_O2", "max_O2", "min_O2", "amplitude_O2")))
-
-
 ```
 
 ## plot the data
@@ -136,15 +128,13 @@ plot_oxygen_a  <- hourly_value %>%
   xlab("Day") +
   geom_point(data=data.frame(Day2=c(190, 360, 456, 840), mean_Value=rep(-1, 4)), colour="black", size=3, shape=4)
 
-
 plot(plot_oxygen_a)
-
 ```
 
 ## just top sensor with all 4 variables and daily mean
 ```{r}
 
-plot_oxygen_b<- daily_values %>%
+plot_oxygen_b <- daily_values %>%
   filter(Sensor_Name %in% c("control_top_1","control_top_2","control_top_3","control_top_4","disturbance_top_1","disturbance_top_2","disturbance_top_3","disturbance_top_4")) %>%
   ggplot(aes(x = Day, y = Oxygen, col = Sensor_Name)) +
   geom_rect(xmin = 8, xmax = 15,
@@ -198,12 +188,11 @@ plot_estimate_oxygen<- analysis %>%
   xlab("Day")
 
 print(plot_estimate_oxygen)
-
 ```
 
 # Microbial community
 
-## Load phyloseq data, remove chloroplast sequences, just include samples from Experiment part III
+## Load phyloseq data, remove chloroplast sequences
 
 ```{r}
 ps <- readRDS("ps_oxic_anoxic.rds")
@@ -213,7 +202,6 @@ taxa_names(ps_new) <- paste0("Seq", seq(ntaxa(ps)))
 
 ## Calculation of alpha diversity index
 ```{r}
-
 diversity_test<- estimate_richness(ps_new, split=TRUE, measures=NULL)
 diversity_test$ID <- rownames(diversity_test) 
 names <- read_excel("barcodes_FKIII.xlsx")
@@ -234,8 +222,6 @@ div_means <- diversity_analysis %>%
 
 div_raw <- diversity_analysis
 
-
-  
 plot_a_diversity_top <- ggplot() +
   geom_rect(data=div_raw, aes(xmin = 8, xmax = 15,
           ymin = -Inf, ymax = Inf), col = "lightblue", fill="lightblue", alpha=0.1) +
@@ -271,7 +257,6 @@ print(plot_a_diversity_bottom)
 
 ## estimates of the alpha diversity analysis
 ```{r}
-
  analysis_shannon <- div_raw %>%
   group_by(Day, Position) %>%
   do(m1 = tidy(lm(Shannon ~ Treatment, data=.), conf.int=T, conf.level = 0.95)) %>%
@@ -292,7 +277,6 @@ plot_estimates_shannon_top <- analysis_shannon%>%
   xlab("Day")  +
   scale_x_continuous(limits=c(0,37),breaks = c(0, 8,15,19,35))
  
-
 print(plot_estimates_shannon_top)
 
 plot_estimates_shannon_bottom <- analysis_shannon%>%
@@ -309,8 +293,6 @@ plot_estimates_shannon_bottom <- analysis_shannon%>%
   scale_x_continuous(limits=c(0,37),breaks = c(0, 8,15,19,35)) 
 
 print(plot_estimates_shannon_bottom)
-
-
 
 #Anova 
 ## top community
@@ -366,12 +348,9 @@ df_rel_top <- df_rel %>%
   filter(Position == "top")
 df_rel_bottom <- df_rel %>%
   filter(Position == "bottom")
-
 ```
 
-
 # NMDS
-
 ## NMDS Plot
 
 ```{r}
@@ -384,7 +363,6 @@ mds_whole <- ps_relative@otu_table %>%
         autotransform = FALSE ## best not to use
 )
 ## 0.16
-
 
 mds_whole_res <- ps_relative @sam_data %>%
   as.tibble() %>%
@@ -410,7 +388,6 @@ NMDS_top <- mds_whole_res %>%
 
 NMDS_bottom <- mds_whole_res %>% 
  filter(Position=="bottom") 
-
 
 # Dynamics
 plot_NMDS1_top <- NMDS_top %>%
@@ -498,7 +475,6 @@ plot_estimate_NMDS1_top <- analysis_NMDS1_top %>%
 
 print(plot_estimate_NMDS1_top)
 
-
 analysis_NMDS2_top <- NMDS_top %>%
   group_by(Day, Day_name) %>%
   do(m1 = tidy(lm(NMDS2 ~ Treatment, data=.), conf.int=T, conf.level = 0.95)) %>%
@@ -573,7 +549,6 @@ p7 <- plot_NMDS1_bottom
 p8 <- plot_NMDS2_bottom
 p9 <- plot_NMDS1_top
 p10 <- plot_NMDS2_top
-
 p11 <- plot_estimate_oxygen
 p12<- plot_estimates_shannon_top
 p13<- plot_estimates_shannon_bottom
@@ -581,7 +556,6 @@ p14 <- plot_estimate_NMDS1_bottom
 p15 <- plot_estimate_NMDS2_bottom
 p16 <- plot_estimate_NMDS1_top
 p17 <- plot_estimate_NMDS2_top
-
 
 #Figure 1
 plot_1 <- p1/
@@ -591,7 +565,6 @@ plot_1 <- p1/
 plot_1 +
   plot_layout(heights=c(2,1,1)) + plot_annotation(tag_levels = "a")
 
-
 #Figure 2
 plot <- (p4|p13)/
   (p3|p12)/
@@ -599,7 +572,6 @@ plot <- (p4|p13)/
   (p8|p15)/
   (p9 |p16)/
   (p10 |p17)
-  
 
 plot + plot_annotation(tag_levels = "a")
 ```
@@ -612,12 +584,9 @@ df_class<- df_rel %>%
   group_by(Class, Treatment,Day, Column, Position) %>%
   dplyr::summarize(Abundance=sum(Abundance))
 
-
 index <- which(df_class$Abundance>=0.05)
 class_to_keep <- unique(df_class[index,"Class"])
 class_to_keep <- unname(unlist(class_to_keep))
-
- 
 
 df_class$Class_filter <- ifelse(df_class$Class %in% class_to_keep, df_class$Class,"Zother")
 
